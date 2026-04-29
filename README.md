@@ -1,78 +1,45 @@
 # Document-to-Podcast Script Generator
 
-A desktop application that turns a Word, PowerPoint or PDF document into a structured, deterministic Host/Expert podcast script — ready to be edited, reviewed and exported as Word, or fed into an audio synthesis pipeline.
+A desktop application that turns a Word, PowerPoint or PDF document into a Host/Expert podcast script. The output is a Word file the user can review, edit, and either send out as written content or hand to a downstream audio synthesis tool.
 
-The application was built as part of an enterprise consulting toolkit; the source code is not public. This repository documents what the product does and the engineering decisions behind it.
-
----
+The application is part of a private corporate toolkit and the source code is not published. This README explains what the tool does and the choices behind it.
 
 ## What it does
 
-The user drops a corporate document (capability deck, case study, methodology overview…) and the application:
+The user drops in a corporate document. Capability deck, case study, methodology overview, that kind of thing. The application reads it, finds the section structure, and writes a conversational script where every section becomes a Host question and every bullet inside that section becomes a point the Expert addresses by name.
 
-1. **Extracts** the document's content, including text from native layers and OCR'd text from infographics and image-heavy PDFs/PPTX slides.
-2. **Detects** the document's section structure: standard consulting headings such as *Industry Challenge*, *Key Benefits*, *How We Help*, *Results*, *Approach*, *Methodology*.
-3. **Generates** a Host/Expert script deterministically:
-   - Headings become Host questions
-   - Bullets become Expert points
-   - Each Expert turn names and explains every relevant point from the document
-4. **Lets the user edit** turns directly in the UI — edit, delete, reorder or insert new turns.
-5. **Exports** the final script as a Word `.docx` file, ready for review, publication or hand-off to an audio production pipeline.
+Reading the document is the first thing that has to be reliable. Native text comes out of the file directly. Image-heavy slides and scanned PDFs go through OCR. If OCR is not installed on the machine, the application says so and runs in a degraded mode against native text only, instead of refusing to start. Many corporate environments will not let you install Tesseract; the tool needs to keep working in those.
 
-The result is a script that *says everything the source document says*, in a conversational format, without inventing content the document does not support.
+Detecting structure is the second thing. The application recognises the standard consulting heading set (Industry Challenge, Key Benefits, How We Help, Results, Approach, Methodology, and so on) and treats anything else it finds as an additional section. Headings drive the Host's questions; bullets drive the Expert's answers.
 
----
+Generating the script is the part where most of the design effort went. The model never decides what to say. Python parses the document, figures out the sections and the bullets, and feeds the model one bullet at a time with the instruction to phrase it as a single Expert sentence, and one heading at a time with the instruction to phrase it as a single Host question. The model handles wording; it never picks, ranks, or omits content.
 
-## Why it exists
+Once the script is generated, the user sees it in the browser as a sequence of editable turns. Each turn can be edited, deleted, reordered, or replaced. Re-rolling a single Expert sentence does not touch the rest of the script, because every turn was generated in isolation in the first place.
 
-LLM-only "summarize this deck as a podcast" approaches fail on the use case in three concrete ways:
+Export is a Word file containing only the script. No appendix, no evidence trace, no source mapping; an earlier version shipped all of those and nobody used them.
 
-- **They invent.** Asked to "make a podcast from this deck," the model fills gaps with plausible but unsourced claims. For client-facing content built on top of corporate methodology decks, that is a hard no.
-- **They omit.** When the deck has nine bullets in a *Key Benefits* section, the model picks "the most important three." The user wants all nine, in order, named.
-- **They flatten structure.** A corporate deck is structured for a reason — Challenge → Approach → Benefits → Results is a narrative the consultant wants preserved. A free-form summary erases it.
+## Why it works the way it does
 
-This application reverses the relationship: **Python decides *what* to say (parsed straight from the document); the LLM decides *how* to phrase each individual turn.** The model never selects, ranks or omits content — it only renders one bullet at a time as a natural Expert sentence and one heading at a time as a natural Host question.
+The shortest way to describe the design is that Python decides what to say and the model decides how to phrase it. That inversion of the usual relationship is what made the tool usable for client-facing content.
 
----
+Letting a language model summarise a corporate deck into a podcast script fails in three ways that are hard to fix with better prompting. The model invents, filling small gaps with plausible but unsourced claims. The model omits, picking three of nine bullets when the user wanted all nine in order. The model flattens, erasing the Challenge → Approach → Benefits → Results structure that the deck was built around. None of those failures happen when the model is never given the choice in the first place.
 
-## Functional capabilities
+Per-turn isolation is the second piece. A "render the whole script" prompt makes the model drift across turns, which means editing one turn destabilises the rest. A "render this single sentence" prompt keeps every turn independent, which is what makes the in-browser editor safe to use.
 
-| Capability | What it covers |
-|---|---|
-| Source formats | `.docx`, `.pptx`, `.pdf` as content sources; `.txt` and `.md` as example scripts; web URLs (optional, off by default) |
-| OCR | Optional OCR pass for infographic-heavy slides and scanned PDFs; the app falls back gracefully to text-only mode if OCR is not installed |
-| Section detection | Recognizes standard consulting section labels and treats unknown headings as additional sections |
-| Deterministic generation | Headings → Host questions, bullets → Expert points; the LLM never picks *which* points |
-| Per-turn LLM rendering | Each turn is rendered in isolation, so a re-roll on one Expert sentence does not destabilize the rest |
-| Anti-hallucination validation | Generated turns are validated against the source document's named points |
-| In-browser segment editor | Edit, delete, reorder or insert turns before export |
-| Export | Word `.docx`, script-only (no evidence appendix), ready to ship |
+Local-only execution is the third. The application runs on 127.0.0.1. The source documents, which are usually confidential, never leave the user's machine except for the individual rendering calls to the model provider. That is the only way this gets approved for use on real client material.
 
----
+## Where it sits in the bigger picture
 
-## Engineering choices that mattered
+This tool authors the script. It does not produce audio. The Word file it exports (Host and Expert turns, tagged) is the input format expected by a separate audio synthesis application that handles voice selection, multi-voice rendering, overlaps, and background music. The two stages are kept apart on purpose: the user reviews and approves the script as a written document before any voice acting happens, which is also when the consulting team can have legal or the client sign off.
 
-- **The LLM does not decide content.** Every "what to say" decision is parsed from the document by Python (headings, bullets, section order). The LLM only handles "how to phrase this single bullet." This is what makes the output trustworthy on regulated client decks.
-- **OCR is optional, not required.** Many corporate environments will not allow installing Tesseract. The application detects its absence and runs in degraded mode (native-text only) with a visible warning, rather than refusing to start.
-- **Per-turn isolation, not full-script generation.** Asking for "the whole script" in one call produces drift across turns and makes editing destructive. Per-turn calls allow the user to re-render a single Expert sentence without touching the rest.
-- **Word export is script-only.** Earlier versions exported the script *plus* an evidence-tracing appendix that mapped each Expert sentence back to the source bullet. Users disabled that view; the current export ships the clean script only.
-- **Plug-and-play distribution.** The application is shipped as a one-click installer that provisions Python, the virtual environment and dependencies, then launches the local server. The target user is a consultant, not a developer.
-- **Local-only by design.** The application runs on `127.0.0.1`. Source documents (which are often confidential) never leave the user's machine except to call the LLM provider for rendering individual turns.
+## Distribution
 
----
-
-## Position in a broader pipeline
-
-This application is the *script-authoring* stage of a larger document → script → audio pipeline. Its output `.docx` (Host/Expert tagged) is consumable directly by a downstream audio synthesis application that handles voice selection, multi-voice rendering, overlaps and background music. The two stages are deliberately decoupled: the user can review, redline and approve the script as a Word document before any audio is produced.
-
----
+The application ships as a one-click installer. Double-click sets up Python, creates a virtual environment, installs the dependencies, and starts the local server. The user is a consultant, not a developer.
 
 ## Status
 
-Active. v1.0 distributed as a self-contained installer. Section detection, deterministic generation, OCR fallback, in-browser editor and Word export are in production use.
+Version one is in production. Section detection, deterministic generation, the OCR fallback, the in-browser editor, and Word export are all shipped.
 
----
+## About this repository
 
-## What this repository contains
-
-This README. The code lives in a private corporate repository and is not redistributable.
+You will only find this README here. The code is not public.
